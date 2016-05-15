@@ -1,0 +1,27 @@
+#./batchRun.sh $1 sns line 8
+#./batchRun.sh $1 dns line 8
+#./batchRun.sh $1 sns wedge 8
+#./batchRun.sh $1 dns wedge 8
+#./batchRun.sh $1 sns sqr 8
+#./batchRun.sh $1 dns sqr 8
+
+#./batchRun.sh $1 dns line 16
+#./batchRun.sh $1 sns line 16
+#./batchRun.sh $1 sns wedge 16
+#./batchRun.sh $1 dns wedge 16
+#./batchRun.sh $1 sns sqr 16
+#./batchRun.sh $1 dns sqr 16
+
+#./batchRun.sh $1 dns line 20
+#./batchRun.sh $1 sns line 20
+#./batchRun.sh $1 sns wedge 20
+#./batchRun.sh $1 dns wedge 20
+#./batchRun.sh $1 sns sqr 20
+#./batchRun.sh $1 dns sqr 20
+
+#./batchRun.sh $1 sns sqr 32
+#./batchRun.sh $1 dns sqr 32
+#./batchRun.sh $1 sns wedge 32
+./batchRun.sh $1 dns wedge 32
+./batchRun.sh $1 dns line 32
+./batchRun.sh $1 sns line 32

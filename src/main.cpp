@@ -1,0 +1,526 @@
+#include <stdio.h>
+#include <vector>
+#include <stdlib.h>
+#include <math.h>
+#include <time.h>
+#include <fstream>
+#include <iostream>
+
+#include "xHandle.h"
+#include "displayable.h"
+#include "Vector2d.h"
+#include "robot.h"
+#include "referee.h"
+#include "PhysicsEngine.h"
+#include "controllerCoop.h"
+
+#include "behaviourFollowHeading.h"
+#include "behaviourRandom.h"
+#include "behaviourDynamicFC.h"
+#include "behaviourStaticFC.h"
+#include "behaviourAvoid.h"
+#include "behaviourNew.h"
+
+using namespace std;
+
+// Function prototypes
+bool CollisiionDetected(vector<Robot *> robotVector);
+float GetAverage(vector<Robot *> robotVector);
+void SaveData(vector<Robot *> robotVector);
+bool CheckIfFormationAchieved(vector<Robot *> robotVector);
+
+vector<Robot *> InitializeDNS();
+vector<Robot *> InitializeSNS();
+vector<Robot *> InitializeRobots();
+
+// Configuration global simulations values;
+int nRobots = 4;
+int maxTimeSteps = 10000;
+bool runHeadless = false;
+
+vector<float> runningAverageVector;
+
+float GetRandom(){
+    return (float)rand()/(float)RAND_MAX;
+ }
+
+/* The almighty MAIN */
+int main(){
+   // Random number initialization
+  srand (time(NULL));
+
+  // This object does all the graphics handling.
+  xHandle * xHandler = new xHandle();
+  
+  // Create the robot objects.
+  vector<Robot *> robotVector = InitializeRobots();
+
+  // Create a PhysicsEngine object 
+  PhysicsEngine * physEng = new PhysicsEngine(0.005);
+
+  // Create a referee object which will control the flow of the sim
+  Referee * ref = new Referee(physEng);
+ 
+  // Add the robots to referee.
+  for(unsigned int i = 0; i < robotVector.size(); i++){
+     ref->AddRobot(robotVector[i]);
+  }
+ 
+  // Display initial positions to the stdout
+  ref->Display();
+  //====================================================================
+  // The main simulation loop!
+  //====================================================================
+
+  int currentTimeStep = 0;
+  bool done = false;
+  if(runHeadless){
+
+    while(currentTimeStep < maxTimeSteps && !done) {	
+      // Have the referee calculate the results of the next time step.
+      ref->Update();
+     
+      currentTimeStep++;
+
+      // Update every so often with some info on progress
+      if(currentTimeStep % 1000 == 0){
+	float d =  GetAverage(robotVector);
+	printf("TimeStep: %d\t%f\n", currentTimeStep, d);
+	done = CheckIfFormationAchieved(robotVector);
+      }
+
+    }
+  }
+  else{
+    while(xHandler->process() and currentTimeStep < maxTimeSteps&& !done) {	
+      // Have the referee calculate the results of the next time step.
+      ref->Update();
+      
+      // Update the graphical display of the simulation
+      xHandler->UpdateScene(ref->GetDisplayableRobots(), currentTimeStep);
+      
+      // Sleep a little bit in order to avoid eating all the cpu. 
+      usleep(100);
+      //    printf("timeStep: %d\n", currentTimeStep); 
+      currentTimeStep++;
+     if(currentTimeStep % 1000 == 0){
+	float d =  GetAverage(robotVector);
+	printf("TimeStep: %d\t%f\n", currentTimeStep, d);
+	done = CheckIfFormationAchieved(robotVector);
+      }
+    }
+  }
+   
+  // now save the data I am interested in!
+  SaveData(robotVector);
+
+  xHandler->End();
+   
+  return 0;
+}
+
+//=============================================================================
+
+float GetAverage(vector<Robot *> robotVector){
+  float averageDist = 0;
+  float N = (float)robotVector.size();
+  
+  for(unsigned int i = 0; i < robotVector.size(); i++){
+    
+    Robot* aRobot = robotVector[i];
+    float pathLength = aRobot->GetTotalDistance();
+
+    averageDist += pathLength;
+  }
+
+  return averageDist / N;
+}
+
+void SaveData(vector<Robot *> robotVector){
+  ofstream myfile;
+ 
+  float averageDist =  GetAverage(robotVector);
+  myfile.open("./outputData", std::fstream::app);
+  myfile << averageDist <<"\n"; 
+  myfile.close();
+};
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+bool CollisiionDetected(vector<Robot *> robotVector){
+  Robot * r1 = robotVector.back();
+
+  for(unsigned int j =0; j < robotVector.size()-1; j++){
+    Robot * r2 = robotVector[j];
+    
+    Vector2d* disp_ij = 
+      SubtractVectors(r1->GetPositionVector(), r2->GetPositionVector());
+    
+    float minSeperation = r1->GetRadius() + r2->GetRadius();
+       
+    if(disp_ij->GetNorm() <= minSeperation){
+      delete disp_ij;
+      return true;
+    }
+    delete disp_ij;
+  } 
+
+  return false;
+}
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+vector<Robot *> InitializeDNS(){
+  
+  ifstream initFile;
+  initFile.open ("./formDef");
+  vector<Robot*> robotVector;
+  int nEdges;
+  int robotsPerEdge;
+  vector<float> edges;
+
+  int lineFormation;
+
+  // remove the first 4 values;
+  initFile >> lineFormation;
+  initFile >> nEdges;
+  robotsPerEdge = nRobots/nEdges;
+ 
+  // read all the bearing constraints
+  for(int i = 0; i < nEdges; i++){
+    float angle;
+    initFile >> angle;
+    edges.push_back(angle);
+  }
+
+  
+  
+  for(int i = 0; i < nRobots; i++){
+    // Create the controller for the robot.
+    ControllerCoop* aController = new ControllerCoop();
+    aController->AddBehaviour( new BehaviourAvoid(12.) );  
+
+    int edgeIndex = i / robotsPerEdge;
+    float angle = edges[edgeIndex];
+    //aController->AddBehaviour( new BehaviourDynamicFC(angle) );
+    if(lineFormation)
+      aController->AddBehaviour( new BehaviourDynamicFC(angle, 1.95) );
+    else
+      aController->AddBehaviour( new BehaviourDynamicFC(angle) );
+   
+    // Place the robots randomly for worry about overlap, thats handled later.
+    Vector2d * velocityVector = new Vector2d(0.,0.);
+    Vector2d * positionVector = new Vector2d(2.*M_PI*GetRandom());
+    positionVector = ScalarMultiplyVector(50.*GetRandom(), positionVector);
+    positionVector = AddVectors(positionVector, new Vector2d(400., 300.) );
+    Robot* aRobot = new Robot (positionVector, velocityVector, 0, aController);
+       
+    robotVector.push_back(aRobot);
+  }
+  initFile.close();
+  return robotVector;
+};
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vector<Robot *> InitializeSNS(){
+  ifstream initFile;
+  initFile.open ("./formDef");
+  vector<Robot*> robotVector;
+  int nConsts;
+  
+  // remove the first 4 values;
+  initFile >> nConsts;
+ 
+  for(int i = 0; i < nRobots; i++){
+    int robotID;
+    initFile >> robotID;
+
+    // Create the controller for the robot.
+    ControllerCoop* aController = new ControllerCoop();
+    aController->AddBehaviour( new BehaviourAvoid(12.) );  
+   
+    // Add the static FC behaviours 
+    for(int i = 0; i < nConsts; i++){
+      float targetBearing;
+      int targetID;
+      initFile >> targetBearing;
+      initFile >> targetID;
+     
+      aController->AddBehaviour( new BehaviourStaticFC(targetBearing*M_PI, targetID) );
+    }
+   
+    // Place the robots randomly for worry about overlap, thats handled later.
+    Vector2d * velocityVector = new Vector2d(0.,0.);
+    Vector2d * positionVector = new Vector2d(2.*M_PI*GetRandom());
+    positionVector = ScalarMultiplyVector(50.*GetRandom(), positionVector);
+    positionVector = AddVectors(positionVector, new Vector2d(400., 300.) );
+    Robot* aRobot = new Robot (positionVector, velocityVector, robotID, aController);
+       
+    robotVector.push_back(aRobot);
+  }
+
+  initFile.close();
+  return robotVector;
+};
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+vector<Robot *> InitializeRobots(){
+
+  vector<Robot *> robotVector;
+
+  ifstream initFile;
+  char algorithmType;
+
+  initFile.open ("./initHeader");
+  initFile >> runHeadless;
+  initFile >> nRobots;
+  initFile >> maxTimeSteps;
+  initFile >> algorithmType;
+  initFile.close();
+  
+  printf("runHeadless = %d\n", runHeadless);
+  printf("nRobots = %d\n", nRobots);
+  printf("maxTimeSteps = %d\n",  maxTimeSteps);
+  printf("algoType = %c\n",  algorithmType);
+
+  if(algorithmType == 'S') robotVector = InitializeSNS();
+  else if(algorithmType == 'D') robotVector = InitializeDNS();
+  else printf("Unknown algorithm type!\n");
+
+  // After getting the robots back make sure they aren't on top of each other
+  while(CollisiionDetected(robotVector)){
+    Vector2d * positionVector = new Vector2d(2.*M_PI*GetRandom());
+    positionVector = ScalarMultiplyVector(50.* GetRandom(), positionVector);
+    positionVector = AddVectors(positionVector, new Vector2d(400., 300.) );
+    robotVector.back()->UpdatePosition(positionVector);
+  }
+  
+  // Now we are read to simulate!
+  
+  return robotVector;
+};
+
+
+bool CheckIfFormationAchieved(vector<Robot *> robotVector){
+ 
+  float averageSoFar = GetAverage(robotVector);
+  float delta = 0.;
+  runningAverageVector.push_back(averageSoFar);
+
+  if(runningAverageVector.size() > 5){
+    runningAverageVector.erase(runningAverageVector.begin());
+  }
+  else{
+    return false;
+  }
+  
+  for(unsigned int i = 0; i < runningAverageVector.size(); i++){
+    float curAvg = runningAverageVector.back();
+    float iAvg = runningAverageVector[i];
+   
+    delta += curAvg - iAvg;
+  }
+  //printf("delta = %f\n", delta);
+
+  if(delta < 1.) return true;
+  
+  return false;
+}
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+/*
+
+ vector<Robot *> robotVector;
+
+  ControllerCoop* c1 = new ControllerCoop();
+  c1->AddBehaviour( new BehaviourAvoid(12.) );  
+  //c1->AddBehaviour( new BehaviourRandom(1.) );  
+  c1->AddBehaviour( new BehaviourDynamicFC(-0.5*M_PI) ); 
+  Vector2d * p1 = new Vector2d( 400.,300. );
+  Vector2d * v1 = new Vector2d( 0., 0. );
+  Robot* r1 = new Robot (p1, v1, 0,c1);
+  
+  ControllerCoop* c2 = new ControllerCoop();
+  c2->AddBehaviour( new BehaviourAvoid(12.) );  
+  //c1->AddBehaviour( new BehaviourRandom(1.) );  
+  c2->AddBehaviour( new BehaviourDynamicFC(-0.5*M_PI) ); 
+  Vector2d * p2 = new Vector2d( 412.,350. );
+  Vector2d * v2 = new Vector2d( 0., 0. );
+  Robot* r2 = new Robot (p2, v2, 0,c2);
+  
+  ControllerCoop* c3 = new ControllerCoop();
+  c3->AddBehaviour( new BehaviourAvoid(12.) );  
+  //c3->AddBehaviour( new BehaviourRandom(1.) );  
+  c3->AddBehaviour( new BehaviourDynamicFC(-0.5*M_PI) ); 
+  Vector2d * p3 = new Vector2d( 425.,325. );
+  Vector2d * v3 = new Vector2d( 0., 0. );
+  Robot* r3 = new Robot (p3, v3, 0,c3);
+
+  robotVector.push_back(r1);
+  robotVector.push_back(r2);
+  robotVector.push_back(r3);
+  //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  for(unsigned int i = 0; i < nRobots; i++){
+  
+    // Create the controller
+    ControllerCoop* aController = new ControllerCoop();
+    
+    //aController->AddBehaviour( new BehaviourRandom(1.) );  
+    aController->AddBehaviour( new BehaviourAvoid(12.) );  
+        
+    ///if(i<10)aController->AddBehaviour( new BehaviourDynamicFC(0.*M_PI,1.) );  
+    //else if(i<20)aController->AddBehaviour( new BehaviourDynamicFC(0.5*M_PI,1.) );  
+    //else if(i<30)aController->AddBehaviour( new BehaviourDynamicFC(M_PI,1.) );  
+    //else aController->AddBehaviour( new BehaviourDynamicFC(-0.5*M_PI,1.) );  
+
+    if(i<8)aController->AddBehaviour( new BehaviourDynamicFC(2.*M_PI/3.,1.) );  
+    else if(i<16)aController->AddBehaviour( new BehaviourDynamicFC(4.*M_PI/3.,1.) );  
+    else aController->AddBehaviour( new BehaviourDynamicFC(0.*M_PI,1.) );  
+    
+    //if(i<8)aController->AddBehaviour( new BehaviourDynamicFC(0.25*M_PI,1.) );  
+    //else aController->AddBehaviour( new BehaviourDynamicFC(-0.25*M_PI,1.) ); 
+    
+    //vector<float> vec;
+    //vec.push_back(0.);
+    //vec.push_back(0.5*M_PI);
+    //vec.push_back(M_PI);
+    //vec.push_back(-0.5*M_PI);
+    //vec.push_back(-0.25*M_PI);
+    //vec.push_back(0.25*M_PI);
+    //vec.push_back(0.66*M_PI);
+    //vec.push_back(1.22*M_PI);
+    //vec.push_back(1.88*M_PI);
+    //aController->AddBehaviour( new BehaviourNew(vec) );
+
+    Vector2d * velocityVector = new Vector2d(2.*M_PI*GetRandom());
+    velocityVector = ScalarMultiplyVector(10., velocityVector);
+    
+    Vector2d * positionVector = new Vector2d(2.*M_PI*GetRandom());
+    positionVector = ScalarMultiplyVector(50.*GetRandom(), positionVector);
+    positionVector = AddVectors(positionVector, new Vector2d(400., 300.) );
+    
+    Robot* aRobot = new Robot (positionVector, velocityVector, 0, aController);
+       
+    robotVector.push_back(aRobot); 
+    
+    // Now check to see if there is a collision with the last robot placed.
+    while(CollisiionDetected(robotVector)){
+      positionVector = new Vector2d(2.*M_PI*GetRandom());
+      positionVector = ScalarMultiplyVector(50.* GetRandom(), positionVector);
+      positionVector = AddVectors(positionVector, new Vector2d(400., 300.) );
+      robotVector.back()->UpdatePosition(positionVector);
+    }
+
+  }
+
+
+
+ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // Create a cirlce of robots facing inward.
+  /*float angularStep = 2.*M_PI/(float)nRobots;
+  for(unsigned int i = 0; i < nRobots; i++){
+
+    // Create the controller
+    //ControllerCoop* aController = new ControllerCoop();
+    //aController->AddBehaviour( new BehaviourRandom(0.25) );  
+    
+    // Place robots on circle    
+    Vector2d * radialVector = new Vector2d( 2.*M_PI-angularStep *(float)i);
+    radialVector = ScalarMultiplyVector(200., radialVector);
+
+    Vector2d * positionVector = new Vector2d( 400.,300. );
+    positionVector = AddVectors(positionVector, radialVector);
+
+    Vector2d * velocityVector = GetAntiParallel(radialVector);
+    velocityVector->Normalize();
+    velocityVector = ScalarMultiplyVector(10., velocityVector);
+    
+    //aController->AddBehaviour( new BehaviourFollowHeading(velocityVector) );
+    //aController->AddBehaviour( new BehaviourDynamicFC() );
+    //Robot* aRobot = new Robot (positionVector, new Vector2d(0., 0.), 0, aController);
+    Robot* aRobot = new Robot (positionVector, velocityVector, 0);
+
+    robotVector.push_back(aRobot);
+    }*/
+
+  //ControllerCoop *c1 = new ControllerCoop(); 
+  /*Vector2d * p1 = new Vector2d( 400.,300. );
+  Vector2d * v1 = new Vector2d( 0., 0. );
+  Robot* r1 = new Robot (p1, v1, 0);
+  robotVector.push_back(r1);
+  
+  Vector2d * p2 = new Vector2d( 420.01, 300.);
+  Vector2d * v2 = new Vector2d( 0., 0. );
+  Robot* r2 = new Robot (p2, v2, 0);
+  robotVector.push_back(r2);
+  
+  Vector2d * p3 = new Vector2d( 420., 410. );
+  Vector2d * v3 = new Vector2d( 0., -10. );
+  Robot* r3 = new Robot (p3, v3, 0);
+  robotVector.push_back(r3);
+  
+  Vector2d * p4 = new Vector2d( 500., 300. );
+  Vector2d * v4 = new Vector2d( -10., 0. );
+  Robot* r4 = new Robot (p4, v4, 0);
+  robotVector.push_back(r4);
+  
+  Vector2d * p5 = new Vector2d( 200., 290. );
+  Vector2d * v5 = new Vector2d( 0., 0. );
+  Robot* r5 = new Robot (p5, v5, 5);
+  robotVector.push_back(r5);
+
+  Vector2d * p6 = new Vector2d( 200.01, 310. );
+  Vector2d * v6 = new Vector2d( 0., 0. );
+  Robot* r6 = new Robot (p6, v6, 0);
+  robotVector.push_back(r6);*/
+/*vector<Robot *> robotVector;
+  ControllerCoop* c1 = new ControllerCoop();
+  c1->AddBehaviour( new BehaviourAvoid(12.) );  
+  c1->AddBehaviour( new BehaviourStaticFC(0.*M_PI, 2) ); 
+  c1->AddBehaviour( new BehaviourStaticFC(0.5*M_PI, 4) ); 
+  Vector2d * p1 = ScalarMultiplyVector( 50.*GetRandom(), new Vector2d( 2.*M_PI*GetRandom() ));
+  p1 = AddVectors(p1, new Vector2d(400.,300.));
+  Vector2d * v1 = new Vector2d( 0., 0. );
+  Robot* r1 = new Robot (p1, v1, 1, c1);
+  
+  ControllerCoop* c2 = new ControllerCoop();
+  c2->AddBehaviour( new BehaviourAvoid(12.) );  
+  Vector2d * p2 = ScalarMultiplyVector( 50.*GetRandom(), new Vector2d( 2.*M_PI*GetRandom() ));
+  p2 = AddVectors(p2, new Vector2d(400.,300.));
+  Vector2d * v2 = new Vector2d( 0., 0. );
+  c2->AddBehaviour( new BehaviourStaticFC(1.*M_PI, 1) ); 
+  c2->AddBehaviour( new BehaviourStaticFC(0.5*M_PI, 3) ); 
+  Robot* r2 = new Robot (p2, v2, 2,c2);
+
+  ControllerCoop* c3 = new ControllerCoop();
+  c3->AddBehaviour( new BehaviourAvoid(12.) );  
+  Vector2d * p3 = ScalarMultiplyVector( 50.*GetRandom(), new Vector2d( 2.*M_PI*GetRandom() ));
+  p3 = AddVectors(p3, new Vector2d(400.,300.));
+  Vector2d * v3 = new Vector2d( 0., 0. );
+  c3->AddBehaviour( new BehaviourStaticFC(-0.5*M_PI, 2 ) ); 
+  c3->AddBehaviour( new BehaviourStaticFC(M_PI, 4) ); 
+  Robot* r3 = new Robot (p3, v3, 3, c3);
+
+  ControllerCoop* c4 = new ControllerCoop();
+  c4->AddBehaviour( new BehaviourAvoid(12.) );  
+  Vector2d * p4 = ScalarMultiplyVector( 50.*GetRandom(), new Vector2d( 2.*M_PI*GetRandom() ));
+  p4 = AddVectors(p4, new Vector2d(400.,300.));
+  Vector2d * v4 = new Vector2d( 0., 0. );
+  c4->AddBehaviour( new BehaviourStaticFC(-0.5*M_PI, 1) ); 
+  c4->AddBehaviour( new BehaviourStaticFC(0.*M_PI, 3 ) ); 
+  Robot* r4 = new Robot (p4, v4, 4,c4);
+  
+  robotVector.push_back(r1);
+  robotVector.push_back(r2);
+  robotVector.push_back(r3);
+  robotVector.push_back(r4);*/

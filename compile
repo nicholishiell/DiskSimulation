@@ -1,0 +1,1 @@
+g++ -Wall ./src/main.cpp -I/usr/include/X11/ -lX11 -lXext -lm -o diskSim
